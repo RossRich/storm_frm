@@ -17,6 +17,7 @@ private:
   const float _sensor_factor = ACS758_50B_SENS / 1000.0f;
   const float _current_factor = VCC_REF / float(ADC_MAX);
   const float _offset_factor = VCC_REF * ACS758_50B_QOV;
+  int _offset_adc = 500;
 
 public:
   ACS758_50B() {}
@@ -25,11 +26,12 @@ public:
   void begin(const uint8_t sensor_pin) {
     _data_pin = sensor_pin;
     pinMode(_data_pin, INPUT);
+    _offset_adc = analogRead(_data_pin);
   }
 
   inline float current() {
-    return (_offset_factor - analogRead(_data_pin) * _current_factor) /
-           _sensor_factor;
+    int data = analogRead(_data_pin);
+    return (static_cast<float>(data - _offset_adc) * _current_factor) / _sensor_factor;
   }
 
   inline float adc_voltage() { return analogRead(_data_pin) * _current_factor; }

@@ -1,33 +1,34 @@
-#include <Wire.h>
-#include <ACS758_50B.hpp>
+#include "ACS758_50B.hpp"
+#include "Motor.hpp"
+#include "Volt.hpp"
 #include <Arduino.h>
 #include <GyverFilters.h>
 #include <GyverHX711.h>
 #include <TimerMs.h>
-#include <ServoSmooth.h>
 
-#define ESC_PIN 6u
-#define MAX_PWM 2000u
-#define MIN_PWM 1000u
+#define ESC_PIN 6u //< ШИМ пин для мотора
 
-#define HX_DT_PIN 3           //< Тензодатчик
-#define HX_SCK_PIN 2          //< Тензодатчик
+#define HX_DT_PIN 3     //< Тензодатчик
+#define HX_SCK_PIN 2    //< Тензодатчик
 #define HX_SCALE 49.98f //< Коэффициен для весов
 
+#define VOLTAGE_SENSOR_PIN A1
 #define CURRENT_SENSOR_PIN A0 //< ACS758
-#define VCC_CUSTOM_PIN 4
 
-#define LOOP_RATE 60u
-#define UPDATA_DATA_RATE 10u
+#define LOOP_RATE 1u
+#define UPDATA_DATA_RATE 1u
 #define COMMUNICATION_RATE 1u
 
 #define NUM_STEEPS 3u //< Кол-во этапов измерения
-#define RUN_PERIOD 3000u //< время замера этапа. Общее время измерения = NUM_STEEPS * RUN_PERIOD
+#define RUN_PERIOD                                                             \
+  3000u //< время замера этапа. Общее время измерения = NUM_STEEPS * RUN_PERIOD
 
 #define LED_ON (digitalWrite(LED_BUILTIN, HIGH))
 #define LED_OFF (digitalWrite(LED_BUILTIN, LOW))
 
-enum STATES: uint8_t {
+static char buf[26];
+
+enum STATES : uint8_t {
   INIT = 0,
   STREAMING,
   RESET,
@@ -36,47 +37,31 @@ enum STATES: uint8_t {
   SETUP_TEST,
 } typedef state_t;
 
-static struct Motor
-{
-  uint16_t pwm = MIN_PWM;
-  uint16_t max_throttle = MAX_PWM;
-} motor;
-
-
 static long weight = 0;
 static float current = 0.0;
 static float voltage = 0.0;
 static uint16_t run_steep = NUM_STEEPS;
 static state_t now_state = STATES::INIT;
 
-void trs(state_t new_state) {
-  now_state = new_state;
-}
+void trs(state_t new_state) { now_state = new_state; }
 
-GyverHX711 weight_sensor(HX_DT_PIN, HX_SCK_PIN);
 // GFilterRA weight_filter(0.4);
+GyverHX711 weight_sensor(HX_DT_PIN, HX_SCK_PIN);
 ACS758_50B current_sensor;
+Volt voltage_sensor;
+Motor motor;
+
 TimerMs run_timer;
 TimerMs loop_timer(1000 / LOOP_RATE);
 TimerMs cmn_timer(1000 / COMMUNICATION_RATE);
 TimerMs update_data_timer(1000 / UPDATA_DATA_RATE, 1, 0);
 
-ServoSmooth servo;
-
 void setup_hx() {
   weight_sensor.sleepMode(false);
-  delay(100);
-  for (size_t i = 0; i < 25; i++)
-  {
-    if (weight_sensor.available())
-      weight = weight_sensor.read();
-
-    delay(100);
+  while (not weight_sensor.available()) {
   }
-
-  weight_sensor.setOffset(-weight);
+  delay(1000);
   weight_sensor.tare();
-  weight = 0;
 }
 
 void setup_led() {
@@ -84,25 +69,15 @@ void setup_led() {
   digitalWrite(LED_BUILTIN, LOW);
 }
 
-void setup_esc() {
-
-  motor.max_throttle = 500;
-  motor.pwm = MIN_PWM;
-
-  servo.attach(ESC_PIN, MIN_PWM, MAX_PWM);
-  servo.setAutoDetach(false);
-  servo.start();
-
-  delay(3000);
+void led_blink(uint16_t ms = 250) {
   LED_ON;
-  servo.writeMicroseconds(MAX_PWM);
-  servo.tickManual();
-  delay(6000);
+  delay(ms);
   LED_OFF;
-  servo.writeMicroseconds(MIN_PWM);
-  servo.tickManual();
-  delay(500);
-  LED_ON;
+}
+
+void motor_calibration() {
+  led_blink();
+  motor.calibrate();
 }
 
 void data_to_serail() {
@@ -119,6 +94,17 @@ void data_to_serail() {
   Serial.println();
 }
 
+void data_to_serial2() {
+  buf[0] = '$';
+  buf[1] = now_state + '0';
+  buf[2] = ' ';
+  dtostrf(weight / HX_SCALE, 4, 2, buf + 3);
+  buf[7] = ';';
+  buf[8] = '\n';
+  buf[9] = '\0';
+  Serial.write(buf, strlen(buf));
+}
+
 void reset() {
   motor.pwm = MIN_PWM;
   weight = 0;
@@ -127,16 +113,15 @@ void reset() {
 }
 
 void update_data() {
-  if (not update_data_timer.tick()) 
+  if (not update_data_timer.tick())
     return;
 
   if (weight_sensor.available())
     weight = weight_sensor.read();
 
   current = current_sensor.current();
-  voltage = (analogRead(A1) * (VCC_REF / float(ADC_MAX))) / 0.09856f;
+  voltage = voltage_sensor.value();
 }
-
 
 void setup() {
   Serial.begin(115200);
@@ -144,20 +129,20 @@ void setup() {
   setup_led();
 
   now_state = STATES::INIT;
-  // pinMode(VCC_CUSTOM_PIN, OUTPUT);
-  // digitalWrite(VCC_CUSTOM_PIN, HIGH);
+
   current_sensor.begin(CURRENT_SENSOR_PIN);
-  pinMode(A1, INPUT);
+  voltage_sensor.begin(VOLTAGE_SENSOR_PIN);
+
   setup_hx();
 
+  motor.begin(ESC_PIN, 500);
+
   data_to_serail();
   delay(100);
   data_to_serail();
   delay(100);
   data_to_serail();
 
-  setup_esc();
-  
   loop_timer.setPeriodMode();
   loop_timer.start();
 
@@ -167,7 +152,7 @@ void setup() {
   LED_OFF;
 }
 
-void loop() { 
+void loop() {
   if (!loop_timer.tick())
     return;
 
@@ -176,8 +161,7 @@ void loop() {
     trs(STATES::COMMUNICATION);
   }
 
-  switch (now_state)
-  {
+  switch (now_state) {
   case STATES::INIT:
     trs(STREAMING);
     break;
@@ -195,7 +179,7 @@ void loop() {
         trs(STATES::STREAMING);
     } else
       trs(STATES::STREAMING);
-    
+
     break;
 
   case STATES::SETUP_TEST:
@@ -207,26 +191,27 @@ void loop() {
     run_timer.start();
   case STATES::RUN_TEST:
     if (!run_timer.tick()) {
-      motor.pwm = MIN_PWM + static_cast<uint16_t>(motor.max_throttle / run_steep);
-      servo.writeMicroseconds(motor.pwm);
+      motor.pwm =
+          MIN_PWM + static_cast<uint16_t>(motor.max_throttle / run_steep);
+      motor.go(motor.pwm);
     } else {
       if (run_steep > 1) {
         run_steep -= 1;
         run_timer.start();
       } else {
-        motor.pwm = MIN_PWM;
-        servo.writeMicroseconds(motor.pwm);
+        motor.stop();
         trs(STATES::STREAMING);
         LED_OFF;
       }
     }
-    servo.tick();
+    // servo.tick();
     break;
-  
+
   default:
     break;
   };
-  
+
   update_data();
   data_to_serail();
+  // data_to_serial2();
 }

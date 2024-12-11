@@ -14,6 +14,7 @@ public:
   bool begin(uint8_t pin, uint16_t timeout_ms = 5000u) {
     _pin = pin;
     pinMode(_pin, INPUT);
+    return true;
   }
 
   inline float value() {

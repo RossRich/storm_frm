@@ -6,10 +6,12 @@
 #include <GyverHX711.h>
 #include <TimerMs.h>
 
+#define DEBUG_DATA 0
+
 #define ESC_PIN 6u //< ШИМ пин для мотора
 
-#define HX_DT_PIN 3     //< Тензодатчик
-#define HX_SCK_PIN 2    //< Тензодатчик
+#define HX_DT_PIN 3                 //< Тензодатчик
+#define HX_SCK_PIN 2                //< Тензодатчик
 #define HX_SCALE (49.98f * 1000.0f) //< Коэффициен для весов
 // #define HX_SCALE (49.80716f * 1000.0f) //< Коэффициен для весов
 
@@ -27,7 +29,7 @@
 #define LED_ON (digitalWrite(LED_BUILTIN, HIGH))
 #define LED_OFF (digitalWrite(LED_BUILTIN, LOW))
 
-static char buf[26];
+static char buf[25];
 
 enum STATES : uint8_t {
   INIT = 0,
@@ -63,9 +65,14 @@ TimerMs update_data_timer(1000 / UPDATA_DATA_RATE, 1, 0);
 void setup_hx() {
   weight_sensor.sleepMode(false);
   weight_sensor.setChannel(HX_GAIN64_A);
-  while (not weight_sensor.available()) {
+  while (not weight_sensor.available() or weight_sensor.read() == 0) {
   }
-  delay(1000);
+
+  uint64_t time = millis() + 1000;
+  while (time > millis()) {
+    weight_sensor.read();
+  }
+
   weight_sensor.tare();
 }
 
@@ -103,14 +110,11 @@ void weight_sensor_data() {
 }
 
 void data_to_serial2() {
-  buf[0] = '$';
-  buf[1] = now_state + '0';
-  buf[2] = ' ';
-  dtostrf(weight / HX_SCALE, 4, 2, buf + 3);
-  buf[7] = ';';
-  buf[8] = '\n';
-  buf[9] = '\0';
-  Serial.write(buf, strlen(buf));
+  //<
+  sprintf(buf, "$%u;%i;%i;%i;%u\n", now_state, int(weight * 1000),
+          int(current * 10), int(voltage), motor.pwm);
+  if (Serial.availableForWrite())
+    Serial.write(buf, strlen(buf));
 }
 
 void reset() {
@@ -123,11 +127,17 @@ void update_data() {
   if (not update_data_timer.tick())
     return;
 
+#if DEBUG_DATA
+  weight = 5.250f;
+  current = 10.0f;
+  voltage = 22.5f;
+#else
   if (weight_sensor.available())
     weight = weight_filter.filtered(weight_sensor.read() / HX_SCALE);
 
   current = current_sensor.current();
   voltage = voltage_sensor.value();
+#endif
 }
 
 void setup() {
@@ -140,12 +150,14 @@ void setup() {
 
   if (not current_sensor.begin(CURRENT_SENSOR_PIN)) {
     Serial.println("Invalid current sensor");
-    for(;;) {}
+    for (;;) {
+    }
   }
 
   if (not voltage_sensor.begin(VOLTAGE_SENSOR_PIN)) {
     Serial.println("Invalid voltage sensor");
-    for (;;) {}
+    for (;;) {
+    }
   }
 
   setup_hx();
@@ -218,8 +230,8 @@ void loop() {
     run_timer.start();
   case STATES::RUN_TEST:
     if (!run_timer.tick()) {
-      motor.pwm =
-          MIN_PWM + static_cast<uint16_t>(motor.max_throttle / NUM_STEEPS * run_steep);
+      motor.pwm = MIN_PWM + static_cast<uint16_t>(motor.max_throttle /
+                                                  NUM_STEEPS * run_steep);
       motor.go(motor.pwm);
     } else {
       if (run_steep < NUM_STEEPS) {
@@ -235,7 +247,7 @@ void loop() {
     motor.stop();
     if (motor.pwm == MIN_PWM)
       trs(STATES::STREAMING);
-      LED_OFF;
+    LED_OFF;
     break;
 
   case STATES::CALIBRATION:
@@ -252,5 +264,5 @@ void loop() {
 
   update_data();
   // weight_sensor_data();
-  data_to_serail();
+  data_to_serial2();
 }

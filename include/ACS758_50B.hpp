@@ -34,7 +34,15 @@ public:
       }
     }
 
-    _offset_adc = analogRead(_data_pin);
+    float offset = 0.0f;
+    uint8_t samples = 16;
+    for (size_t i = 0; i < samples; i++) {
+      offset += analogRead(_data_pin);
+      delay(25);
+    }
+
+    offset /= samples;
+    _offset_adc = static_cast<uint16_t>(offset);
 
     if (_offset_adc == 0)
       return false;

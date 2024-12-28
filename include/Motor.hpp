@@ -3,8 +3,9 @@
 #include <TimerMs.h>
 #include <Wire.h>
 
+#define TRANK_PWM 50u
 #define MIN_PWM 1000u
-#define MAX_PWM 1950u
+#define MAX_PWM 2000u
 
 class Motor {
 private:
@@ -13,19 +14,30 @@ private:
 
 public:
   uint16_t pwm = MIN_PWM;
-  uint16_t max_throttle = MAX_PWM;
-  volatile bool is_calibration_done = false;
+  uint16_t max_throttle_m = (MAX_PWM - MIN_PWM) - TRANK_PWM;
+  bool is_calibration_done = false;
 
   Motor() {}
   ~Motor() {}
 
-  void begin(uint8_t pin, uint16_t max_throttle) {
+  bool begin(uint8_t pin, uint16_t max_throttle) {
     _pin = pin;
-    this->max_throttle = max_throttle;
+
+    if (MAX_PWM <= MIN_PWM)
+      return false;
+
+    // Что то не так
+    if (max_throttle > this->max_throttle_m)
+      return false;
+
+    this->max_throttle_m = max_throttle;
     is_calibration_done = false;
     _servo.attach(_pin, MIN_PWM, MAX_PWM);
     _servo.setAutoDetach(false);
     _servo.start();
+    go(MIN_PWM);
+
+    return true;
   }
 
   void calibrate() {
@@ -38,25 +50,20 @@ public:
     is_calibration_done = true;
   }
 
-  void go(uint16_t pwm) {
-    if (not is_calibration_done)
-      return;
-
-    pwm = constrain(pwm, MIN_PWM, MIN_PWM + max_throttle);
-    this->pwm = pwm;
+  void go(const uint16_t pwm) {
+    this->pwm = constrain(pwm, MIN_PWM, MIN_PWM + max_throttle_m);
     _servo.writeMicroseconds(this->pwm);
     _servo.tickManual();
   }
 
   void stop() {
-    uint16_t _pwm = int(max_throttle / 10.0f);
-    for (size_t i = 0; i < 10; i++)
+    uint8_t steps = 10;
+    uint16_t _pwm = int(max_throttle_m / float(steps));
+    for (size_t i = 0; i < steps; i++)
     {
-      pwm = pwm - _pwm;
-      pwm = constrain(pwm, MIN_PWM, MAX_PWM);
-      _servo.writeMicroseconds(pwm);
-      _servo.tickManual();
+      go(pwm - _pwm);
       delay(100);
     }
+    go(MIN_PWM);
   }
 };

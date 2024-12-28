@@ -1,7 +1,8 @@
 #include "Config.hpp"
 #include <Arduino.h>
 
-#define SCALE 0.09856f
+// #define SCALE 0.09856f
+#define SCALE 0.105f
 
 class Volt {
 private:

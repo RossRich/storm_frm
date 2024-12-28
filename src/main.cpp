@@ -5,15 +5,22 @@
 #include <GyverFilters.h>
 #include <GyverHX711.h>
 #include <TimerMs.h>
+#include "CMD_CODE.h"
 
 #define DEBUG_DATA 0
 
 #define ESC_PIN 6u //< ШИМ пин для мотора
 
+#define SERIAL_MODE_WEB 0u
+#define SERIAL_MODE_TER 1u
+
+#define DISARM 0u; 
+#define ARM 1u;
+
 #define HX_DT_PIN 3                 //< Тензодатчик
 #define HX_SCK_PIN 2                //< Тензодатчик
-#define HX_SCALE (49.98f * 1000.0f) //< Коэффициен для весов
-// #define HX_SCALE (49.80716f * 1000.0f) //< Коэффициен для весов
+#define HX_SCALE 201100.0f //< Коэффициен для весов
+// #define HX_SCALE (49.98f * 1000.0f) //< Коэффициен для весов
 
 #define VOLTAGE_SENSOR_PIN A1
 #define CURRENT_SENSOR_PIN A0 //< ACS758
@@ -24,12 +31,12 @@
 
 #define NUM_STEEPS 10u //< Кол-во этапов измерения
 #define RUN_PERIOD                                                             \
-  5000u //< время замера этапа. Общее время измерения = NUM_STEEPS * RUN_PERIOD
+  3000u //< время замера этапа. Общее время измерения = NUM_STEEPS * RUN_PERIOD
 
 #define LED_ON (digitalWrite(LED_BUILTIN, HIGH))
 #define LED_OFF (digitalWrite(LED_BUILTIN, LOW))
 
-static char buf[25];
+static char buf[27];
 
 enum STATES : uint8_t {
   INIT = 0,
@@ -48,10 +55,13 @@ static float voltage = 0.0;
 static uint16_t run_steep = NUM_STEEPS;
 static state_t now_state = STATES::INIT;
 static state_t state_backup = now_state;
+static uint8_t serial_mode = SERIAL_MODE_WEB;
+volatile static uint8_t is_arm = DISARM;
 
 void trs(state_t new_state) { now_state = new_state; }
 
 GFilterRA weight_filter(0.35);
+GFilterRA current_filter(0.35);
 GyverHX711 weight_sensor(HX_DT_PIN, HX_SCK_PIN);
 ACS758_50B current_sensor;
 Volt voltage_sensor;
@@ -87,34 +97,16 @@ void led_blink(uint16_t ms = 250) {
   LED_OFF;
 }
 
-void data_to_serail() {
-  Serial.print(static_cast<uint8_t>(now_state));
-  Serial.print(' ');
-  Serial.print(weight);
-  Serial.print(' ');
-  Serial.print(current);
-  Serial.print(' ');
-  Serial.print(voltage);
-  Serial.print(' ');
-  Serial.print(motor.pwm);
-  Serial.print(' ');
-  Serial.println();
-}
-
-void weight_sensor_data() {
-  Serial.print(weight_sensor.getOffset());
-  Serial.print(' ');
-  Serial.print(weight);
-  Serial.print(' ');
-  Serial.println();
-}
-
-void data_to_serial2() {
-  //<
-  sprintf(buf, "$%u;%i;%i;%i;%u\n", now_state, int(weight * 1000),
-          int(current * 10), int(voltage), motor.pwm);
-  if (Serial.availableForWrite())
-    Serial.write(buf, strlen(buf));
+void data_to_serial() {
+  if (serial_mode == SERIAL_MODE_WEB) {
+    sprintf(buf, "$%u;%i;%i;%i;%u!\n", now_state, int(weight * 1000), 
+      int(current * 10), int(voltage * 10), motor.pwm);
+    
+    if (Serial.availableForWrite())
+      Serial.write(buf, strlen(buf));
+  } else {
+    Serial.println("Not implimented");
+  }
 }
 
 void reset() {
@@ -135,7 +127,7 @@ void update_data() {
   if (weight_sensor.available())
     weight = weight_filter.filtered(weight_sensor.read() / HX_SCALE);
 
-  current = current_sensor.current();
+  current = current_filter.filtered(current_sensor.current());
   voltage = voltage_sensor.value();
 #endif
 }
@@ -160,15 +152,20 @@ void setup() {
     }
   }
 
+  if (not motor.begin(ESC_PIN, (MAX_PWM - MIN_PWM) - TRANK_PWM)) {
+    Serial.println("Setup motor failed");
+    for(;;) {
+    }
+  }
+  
   setup_hx();
 
-  motor.begin(ESC_PIN, MAX_PWM - MIN_PWM);
-
-  data_to_serail();
+  data_to_serial();
   delay(100);
-  data_to_serail();
+  data_to_serial();
   delay(100);
-  data_to_serail();
+  data_to_serial();
+  delay(100);
 
   loop_timer.setPeriodMode();
   loop_timer.start();
@@ -185,7 +182,6 @@ void loop() {
 
   // ввод блокируется пока выполняется тест
   if (now_state == STATES::STREAMING and cmn_timer.tick()) {
-    // state_backup = now_state;
     trs(STATES::COMMUNICATION);
   }
 
@@ -201,11 +197,11 @@ void loop() {
     if (Serial.available() >= 3) {
       String s = Serial.readStringUntil('\n');
       uint8_t cmd = static_cast<uint8_t>(atoi(s.c_str()));
-      if (cmd == 101) {
+      if (cmd == START_TEST_CODE) {
         trs(STATES::SETUP_TEST);
-      } else if (cmd == 212) {
+      } else if (cmd == START_CALIB_CODE) {
         trs(STATES::CALIBRATION);
-      } else if (cmd == 254) {
+      } else if (cmd == STOP_TEST_CODE) {
         motor.is_calibration_done = true;
       } else
         trs(STATES::STREAMING);
@@ -215,13 +211,8 @@ void loop() {
     break;
 
   case STATES::SETUP_TEST:
-    led_blink(500);
+    led_blink(250);
     LED_ON;
-
-    if (not motor.is_calibration_done) {
-      trs(STATES::STOP_TEST);
-      break;
-    }
 
     run_steep = 1;
     run_timer.setTime(RUN_PERIOD);
@@ -230,7 +221,7 @@ void loop() {
     run_timer.start();
   case STATES::RUN_TEST:
     if (!run_timer.tick()) {
-      motor.pwm = MIN_PWM + static_cast<uint16_t>(motor.max_throttle /
+      motor.pwm = MIN_PWM + static_cast<uint16_t>(motor.max_throttle_m /
                                                   NUM_STEEPS * run_steep);
       motor.go(motor.pwm);
     } else {
@@ -263,6 +254,5 @@ void loop() {
   };
 
   update_data();
-  // weight_sensor_data();
-  data_to_serial2();
+  data_to_serial();
 }

@@ -27,7 +27,7 @@
 
 #define LOOP_RATE 15u
 #define UPDATA_DATA_RATE 15u
-#define COMMUNICATION_RATE 1u
+#define COMMUNICATION_RATE 2u
 
 #define NUM_STEEPS 10u //< Кол-во этапов измерения
 #define RUN_PERIOD                                                             \
@@ -176,14 +176,30 @@ void setup() {
   LED_OFF;
 }
 
+void check_cmd() {
+  if (Serial.available() >= 3) {
+    String s = Serial.readStringUntil('\n');
+    uint8_t cmd = static_cast<uint8_t>(atoi(s.c_str()));
+    if (cmd == START_TEST_CODE) {
+      if (now_state == STATES::STREAMING)
+        trs(STATES::SETUP_TEST);
+    } else if (cmd == START_CALIB_CODE) {
+      if (now_state == STREAMING)
+        trs(STATES::CALIBRATION);
+    } else if (cmd == STOP_TEST_CODE) {
+      trs(STATES::STOP_TEST);
+    }
+  }
+}
+
 void loop() {
+
+  if (cmn_timer.tick()) {
+    check_cmd();
+  }
+
   if (!loop_timer.tick())
     return;
-
-  // ввод блокируется пока выполняется тест
-  if (now_state == STATES::STREAMING and cmn_timer.tick()) {
-    trs(STATES::COMMUNICATION);
-  }
 
   switch (now_state) {
   case STATES::INIT:
@@ -191,23 +207,6 @@ void loop() {
     break;
 
   case STATES::STREAMING:
-    break;
-
-  case STATES::COMMUNICATION:
-    if (Serial.available() >= 3) {
-      String s = Serial.readStringUntil('\n');
-      uint8_t cmd = static_cast<uint8_t>(atoi(s.c_str()));
-      if (cmd == START_TEST_CODE) {
-        trs(STATES::SETUP_TEST);
-      } else if (cmd == START_CALIB_CODE) {
-        trs(STATES::CALIBRATION);
-      } else if (cmd == STOP_TEST_CODE) {
-        motor.is_calibration_done = true;
-      } else
-        trs(STATES::STREAMING);
-    } else
-      trs(STATES::STREAMING);
-
     break;
 
   case STATES::SETUP_TEST:

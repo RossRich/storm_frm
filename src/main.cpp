@@ -36,7 +36,9 @@
 #define LED_ON (digitalWrite(LED_BUILTIN, HIGH))
 #define LED_OFF (digitalWrite(LED_BUILTIN, LOW))
 
-static char buf[27];
+#define PAYLOAD_SIZE 30u
+
+static char buf[PAYLOAD_SIZE];
 
 enum STATES : uint8_t {
   INIT = 0,
@@ -46,7 +48,9 @@ enum STATES : uint8_t {
   RUN_TEST,
   SETUP_TEST,
   CALIBRATION,
-  STOP_TEST
+  STOP_TEST,
+  RECEIVE_SETUP,
+  SEND_SETUP
 } typedef state_t;
 
 static float weight = 0;
@@ -97,6 +101,7 @@ void led_blink(uint16_t ms = 250) {
   LED_OFF;
 }
 
+//TODO: 2 знака после запятой
 void data_to_serial() {
   if (serial_mode == SERIAL_MODE_WEB) {
     sprintf(buf, "$%u;%i;%i;%i;%u!\n", now_state, int(weight * 1000), 
@@ -107,6 +112,12 @@ void data_to_serial() {
   } else {
     Serial.println("Not implimented");
   }
+}
+
+void setup_to_serial() {
+  sprintf(buf, "$MT_%u!\n", motor.max_throttle_m);
+  if (Serial.availableForWrite())
+      Serial.write(buf, strlen(buf));
 }
 
 void reset() {
@@ -188,6 +199,10 @@ void check_cmd() {
         trs(STATES::CALIBRATION);
     } else if (cmd == STOP_TEST_CODE) {
       trs(STATES::STOP_TEST);
+    } else if (cmd == GET_SETUP) {
+      trs(STATES::SEND_SETUP);
+    } else if (cmd == SET_SETUP) {
+      trs(STATES::RECEIVE_SETUP);
     }
   }
 }
@@ -246,6 +261,16 @@ void loop() {
     motor.calibrate();
     trs(STATES::STREAMING);
     LED_OFF;
+    break;
+
+  case STATES::RECEIVE_SETUP:
+    trs(STATES::STREAMING);
+    break;
+
+  case STATES::SEND_SETUP:
+    setup_to_serial();
+    delay(500);
+    trs(STATES::STREAMING);
     break;
 
   default:

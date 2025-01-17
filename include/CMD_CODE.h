@@ -1,3 +1,5 @@
 #define START_TEST_CODE 101u
 #define STOP_TEST_CODE 254u
 #define START_CALIB_CODE 212u
+#define GET_SETUP 30u
+#define SET_SETUP 35u

@@ -1,37 +1,38 @@
-#include "ACS758_50B.hpp"
-#include "Motor.hpp"
-#include "Volt.hpp"
 #include <Arduino.h>
+#include <AsyncStream.h>
 #include <GyverFilters.h>
 #include <GyverHX711.h>
 #include <TimerMs.h>
+#include "ACS758_50B.hpp"
 #include "CMD_CODE.h"
+#include "Motor.hpp"
+#include "Volt.hpp"
 
 #define DEBUG_DATA 0
 
-#define ESC_PIN 6u //< ШИМ пин для мотора
+#define ESC_PIN 6u  //< ШИМ пин для мотора
 
 #define SERIAL_MODE_WEB 0u
 #define SERIAL_MODE_TER 1u
 
-#define DISARM 0u; 
+#define DISARM 0u;
 #define ARM 1u;
 
-#define HX_DT_PIN 3                 //< Тензодатчик
-#define HX_SCK_PIN 2                //< Тензодатчик
-#define HX_SCALE 201100.0f //< Коэффициен для весов
+#define HX_DT_PIN 3         //< Тензодатчик
+#define HX_SCK_PIN 2        //< Тензодатчик
+#define HX_SCALE 201100.0f  //< Коэффициен для весов
 // #define HX_SCALE (49.98f * 1000.0f) //< Коэффициен для весов
 
 #define VOLTAGE_SENSOR_PIN A1
-#define CURRENT_SENSOR_PIN A0 //< ACS758
+#define CURRENT_SENSOR_PIN A0  //< ACS758
 
 #define LOOP_RATE 15u
 #define UPDATA_DATA_RATE 15u
 #define COMMUNICATION_RATE 2u
 
-#define NUM_STEEPS 10u //< Кол-во этапов измерения
-#define RUN_PERIOD                                                             \
-  3000u //< время замера этапа. Общее время измерения = NUM_STEEPS * RUN_PERIOD
+#define NUM_STEEPS 10u  //< Кол-во этапов измерения
+#define RUN_PERIOD \
+  3000u  //< время замера этапа. Общее время измерения = NUM_STEEPS * RUN_PERIOD
 
 #define LED_ON (digitalWrite(LED_BUILTIN, HIGH))
 #define LED_OFF (digitalWrite(LED_BUILTIN, LOW))
@@ -49,6 +50,7 @@ enum STATES : uint8_t {
   SETUP_TEST,
   CALIBRATION,
   STOP_TEST,
+  RECEIVE_BEGIN,
   RECEIVE_SETUP,
   SEND_SETUP
 } typedef state_t;
@@ -62,8 +64,11 @@ static state_t state_backup = now_state;
 static uint8_t serial_mode = SERIAL_MODE_WEB;
 volatile static uint8_t is_arm = DISARM;
 
-void trs(state_t new_state) { now_state = new_state; }
+void trs(state_t new_state) {
+  now_state = new_state;
+}
 
+AsyncStream<20> async_stream(&Serial, '\n');
 GFilterRA weight_filter(0.35);
 GFilterRA current_filter(0.35);
 GyverHX711 weight_sensor(HX_DT_PIN, HX_SCK_PIN);
@@ -75,6 +80,7 @@ TimerMs run_timer;
 TimerMs loop_timer(1000 / LOOP_RATE);
 TimerMs cmn_timer(1000 / COMMUNICATION_RATE);
 TimerMs update_data_timer(1000 / UPDATA_DATA_RATE, 1, 0);
+TimerMs receive_timer;
 
 void setup_hx() {
   weight_sensor.sleepMode(false);
@@ -101,12 +107,12 @@ void led_blink(uint16_t ms = 250) {
   LED_OFF;
 }
 
-//TODO: 2 знака после запятой
+// TODO: 2 знака после запятой
 void data_to_serial() {
   if (serial_mode == SERIAL_MODE_WEB) {
-    sprintf(buf, "$%u;%i;%i;%i;%u!\n", now_state, int(weight * 1000), 
-      int(current * 10), int(voltage * 10), motor.pwm);
-    
+    sprintf(buf, "$%u;%i;%i;%i;%u!\n", now_state, int(weight * 1000),
+            int(current * 10), int(voltage * 10), motor.pwm);
+
     if (Serial.availableForWrite())
       Serial.write(buf, strlen(buf));
   } else {
@@ -117,7 +123,7 @@ void data_to_serial() {
 void setup_to_serial() {
   sprintf(buf, "$MT_%u!\n", motor.max_throttle_m);
   if (Serial.availableForWrite())
-      Serial.write(buf, strlen(buf));
+    Serial.write(buf, strlen(buf));
 }
 
 void reset() {
@@ -165,17 +171,17 @@ void setup() {
 
   if (not motor.begin(ESC_PIN, (MAX_PWM - MIN_PWM) - TRANK_PWM)) {
     Serial.println("Setup motor failed");
-    for(;;) {
+    for (;;) {
     }
   }
-  
+
   setup_hx();
 
-  data_to_serial();
+  setup_to_serial();
   delay(100);
-  data_to_serial();
+  setup_to_serial();
   delay(100);
-  data_to_serial();
+  setup_to_serial();
   delay(100);
 
   loop_timer.setPeriodMode();
@@ -202,13 +208,12 @@ void check_cmd() {
     } else if (cmd == GET_SETUP) {
       trs(STATES::SEND_SETUP);
     } else if (cmd == SET_SETUP) {
-      trs(STATES::RECEIVE_SETUP);
+      trs(STATES::RECEIVE_BEGIN);
     }
   }
 }
 
 void loop() {
-
   if (cmn_timer.tick()) {
     check_cmd();
   }
@@ -217,64 +222,75 @@ void loop() {
     return;
 
   switch (now_state) {
-  case STATES::INIT:
-    trs(STREAMING);
-    break;
+    case STATES::INIT:
+      trs(STREAMING);
+      break;
 
-  case STATES::STREAMING:
-    break;
+    case STATES::STREAMING:
+      break;
 
-  case STATES::SETUP_TEST:
-    led_blink(250);
-    LED_ON;
+    case STATES::SETUP_TEST:
+      led_blink(250);
+      LED_ON;
 
-    run_steep = 1;
-    run_timer.setTime(RUN_PERIOD);
-    run_timer.setTimerMode();
-    trs(STATES::RUN_TEST);
-    run_timer.start();
-  case STATES::RUN_TEST:
-    if (!run_timer.tick()) {
-      motor.pwm = MIN_PWM + static_cast<uint16_t>(motor.max_throttle_m /
-                                                  NUM_STEEPS * run_steep);
-      motor.go(motor.pwm);
-    } else {
-      if (run_steep < NUM_STEEPS) {
-        run_steep += 1;
-        run_timer.start();
+      run_steep = 1;
+      run_timer.setTime(RUN_PERIOD);
+      run_timer.setTimerMode();
+      trs(STATES::RUN_TEST);
+      run_timer.start();
+    case STATES::RUN_TEST:
+      if (!run_timer.tick()) {
+        motor.pwm = MIN_PWM + static_cast<uint16_t>(motor.max_throttle_m /
+                                                    NUM_STEEPS * run_steep);
+        motor.go(motor.pwm);
       } else {
-        trs(STATES::STOP_TEST);
+        if (run_steep < NUM_STEEPS) {
+          run_steep += 1;
+          run_timer.start();
+        } else {
+          trs(STATES::STOP_TEST);
+        }
       }
-    }
-    break;
+      break;
 
-  case STATES::STOP_TEST:
-    motor.stop();
-    if (motor.pwm == MIN_PWM)
+    case STATES::STOP_TEST:
+      motor.stop();
+      if (motor.pwm == MIN_PWM)
+        trs(STATES::STREAMING);
+      LED_OFF;
+      break;
+
+    case STATES::CALIBRATION:
+      led_blink(250);
+      LED_ON;
+      motor.calibrate();
       trs(STATES::STREAMING);
-    LED_OFF;
-    break;
+      LED_OFF;
+      break;
+    case STATES::RECEIVE_BEGIN:
+      receive_timer.setTime(1000);
+      receive_timer.setTimerMode();
+      trs(STATES::RECEIVE_SETUP);
+      receive_timer.start();
+    case STATES::RECEIVE_SETUP:
+      if (!receive_timer.tick()) {
+        if (async_stream.available()) {
+          led_blink(250);
+          Serial.println(async_stream.buf);
+        }
+      } else {
+        trs(STATES::STREAMING);
+      }
+      break;
 
-  case STATES::CALIBRATION:
-    led_blink(250);
-    LED_ON;
-    motor.calibrate();
-    trs(STATES::STREAMING);
-    LED_OFF;
-    break;
+    case STATES::SEND_SETUP:
+      setup_to_serial();
+      delay(500);
+      trs(STATES::STREAMING);
+      break;
 
-  case STATES::RECEIVE_SETUP:
-    trs(STATES::STREAMING);
-    break;
-
-  case STATES::SEND_SETUP:
-    setup_to_serial();
-    delay(500);
-    trs(STATES::STREAMING);
-    break;
-
-  default:
-    break;
+    default:
+      break;
   };
 
   update_data();

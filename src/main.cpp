@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <AsyncStream.h>
+#include <StringUtils.h>
 #include <GyverFilters.h>
 #include <GyverHX711.h>
 #include <TimerMs.h>
@@ -37,7 +38,7 @@
 #define LED_ON (digitalWrite(LED_BUILTIN, HIGH))
 #define LED_OFF (digitalWrite(LED_BUILTIN, LOW))
 
-#define PAYLOAD_SIZE 30u
+#define PAYLOAD_SIZE 35u
 
 static char buf[PAYLOAD_SIZE];
 
@@ -68,7 +69,9 @@ void trs(state_t new_state) {
   now_state = new_state;
 }
 
-AsyncStream<20> async_stream(&Serial, '\n');
+AsyncStream<50> async_stream(&Serial, '\n');
+uint8_t arr[50];
+Text cmd_text(arr, 50);
 GFilterRA weight_filter(0.35);
 GFilterRA current_filter(0.35);
 GyverHX711 weight_sensor(HX_DT_PIN, HX_SCK_PIN);
@@ -110,7 +113,7 @@ void led_blink(uint16_t ms = 250) {
 // TODO: 2 знака после запятой
 void data_to_serial() {
   if (serial_mode == SERIAL_MODE_WEB) {
-    sprintf(buf, "$%u;%i;%i;%i;%u!\n", now_state, int(weight * 1000),
+    sprintf(buf, "$D;%u;%i;%i;%i;%u!\n", now_state, int(weight * 1000),
             int(current * 10), int(voltage * 10), motor.pwm);
 
     if (Serial.availableForWrite())
@@ -121,7 +124,13 @@ void data_to_serial() {
 }
 
 void setup_to_serial() {
-  sprintf(buf, "$MT_%u!\n", motor.max_throttle_m);
+  sprintf(buf, "$D;MT_%u!\n", motor.max_throttle_m);
+  if (Serial.availableForWrite())
+    Serial.write(buf, strlen(buf));
+}
+
+void cmd_to_serial(uint8_t cmd) {
+  sprintf(buf, "$C;%u!\n", cmd);
   if (Serial.availableForWrite())
     Serial.write(buf, strlen(buf));
 }
@@ -193,8 +202,12 @@ void setup() {
   LED_OFF;
 }
 
+/**
+ * :NOTE Код команды может быть 2 знака + символ начала строки
+ * 
+ */
 void check_cmd() {
-  if (Serial.available() >= 3) {
+  if (Serial.available() >= 2) {
     String s = Serial.readStringUntil('\n');
     uint8_t cmd = static_cast<uint8_t>(atoi(s.c_str()));
     if (cmd == START_TEST_CODE) {
@@ -214,6 +227,8 @@ void check_cmd() {
 }
 
 void loop() {
+  update_data();
+
   if (cmn_timer.tick()) {
     check_cmd();
   }
@@ -227,6 +242,7 @@ void loop() {
       break;
 
     case STATES::STREAMING:
+      data_to_serial();
       break;
 
     case STATES::SETUP_TEST:
@@ -268,15 +284,27 @@ void loop() {
       LED_OFF;
       break;
     case STATES::RECEIVE_BEGIN:
-      receive_timer.setTime(1000);
+      cmd_to_serial(SET_SETUP);
+      receive_timer.setTime(5000);
       receive_timer.setTimerMode();
       trs(STATES::RECEIVE_SETUP);
       receive_timer.start();
     case STATES::RECEIVE_SETUP:
       if (!receive_timer.tick()) {
         if (async_stream.available()) {
-          led_blink(250);
-          Serial.println(async_stream.buf);
+          Text _cmd(async_stream.buf);
+          uint16_t num = _cmd.count(';');
+          if (num) {
+            for (size_t i = 0; i < num; i++)
+            {
+              Serial.println(cmd_text[i]);
+            }
+          } else {
+            
+          }
+          // setup_to_serial();
+        } else {
+          cmd_to_serial(SET_SETUP);
         }
       } else {
         trs(STATES::STREAMING);
@@ -293,6 +321,6 @@ void loop() {
       break;
   };
 
-  update_data();
-  data_to_serial();
+  // update_data();
+  // data_to_serial();
 }

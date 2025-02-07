@@ -29,7 +29,7 @@
 
 #define LOOP_RATE 15u
 #define UPDATA_DATA_RATE 15u
-#define COMMUNICATION_RATE 2u
+#define COMMUNICATION_RATE 1u
 
 #define NUM_STEEPS 10u  //< Кол-во этапов измерения
 #define RUN_PERIOD \
@@ -116,6 +116,16 @@ void data_to_serial() {
     sprintf(buf, "$D;%u;%i;%i;%i;%u!\n", now_state, int(weight * 1000),
             int(current * 10), int(voltage * 10), motor.pwm);
 
+    // uint8_t data_len = strlen(buf+2) - 1;
+
+    // if (data_len > 254) {
+      // Serial.print("Invalid data len ");Serial.println(int(data_len));
+      // return;
+    // }
+
+    // buf[0] = '$';
+    // buf[1] = data_len;
+
     if (Serial.availableForWrite())
       Serial.write(buf, strlen(buf));
   } else {
@@ -124,7 +134,18 @@ void data_to_serial() {
 }
 
 void setup_to_serial() {
-  sprintf(buf, "$D;MT_%u!\n", motor.max_throttle_m);
+  sprintf(buf, "$C;%u;%u;%u!\n", motor.max_throttle_m, MAX_PWM, MIN_PWM);
+
+  // uint8_t data_len = strlen(buf+2) - 1;
+
+  // if (data_len > 254) {
+    // Serial.print("Invalid data len ");Serial.println(int(data_len));
+    // return;
+  // }
+
+  // buf[0] = '$';
+  // buf[1] = data_len;
+
   if (Serial.availableForWrite())
     Serial.write(buf, strlen(buf));
 }
@@ -284,7 +305,7 @@ void loop() {
       LED_OFF;
       break;
     case STATES::RECEIVE_BEGIN:
-      cmd_to_serial(SET_SETUP);
+      // cmd_to_serial(SET_SETUP);
       receive_timer.setTime(5000);
       receive_timer.setTimerMode();
       trs(STATES::RECEIVE_SETUP);
@@ -304,7 +325,7 @@ void loop() {
           }
           // setup_to_serial();
         } else {
-          cmd_to_serial(SET_SETUP);
+          // cmd_to_serial(SET_SETUP);
         }
       } else {
         trs(STATES::STREAMING);
